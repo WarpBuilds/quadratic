@@ -26,6 +26,7 @@ jobs:
         run: echo "user-id=$(gh api "/users/${{ steps.app-token.outputs.app-slug }}[bot]" --jq .id)" >> "$GITHUB_OUTPUT"
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+
       - run: |
           git config --global user.name '${{ steps.app-token.outputs.app-slug }}[bot]'
           git config --global user.email '${{ steps.get-user-id.outputs.user-id }}+${{ steps.app-token.outputs.app-slug }}[bot]@users.noreply.github.com'
@@ -63,42 +64,137 @@ jobs:
             local branch_name=$1
             echo "Syncing branch: $branch_name"
 
-            # Get just the commit message from upstream
-            UPSTREAM_COMMIT_MSG=$(git log -1 --pretty=format:"%s" upstream/$branch_name)
-
-            # Check if we need to merge (are we behind upstream?)
-            if git merge-base --is-ancestor HEAD upstream/$branch_name; then
-              echo "Already up to date with upstream/$branch_name"
-            else
-              # Create a temporary index file for the merge to exclude workflow files
-              echo "Creating temporary index to exclude .github/workflows..."
-              git checkout-index -a -f --prefix=/tmp/merge-work/
-
-              # Get list of changes from upstream, excluding workflow files
-              UPSTREAM_CHANGES=$(git diff --name-only HEAD upstream/$branch_name | grep -v "^.github/workflows/")
-
-              # Apply those changes from upstream to our temp directory
-              echo "Applying upstream changes except for workflow files..."
-              for FILE in $UPSTREAM_CHANGES; do
-                # Create directory structure if needed
-                mkdir -p /tmp/merge-work/$(dirname "$FILE")
-                # Copy the file from upstream
-                git show upstream/$branch_name:"$FILE" > /tmp/merge-work/"$FILE" || true
-              done
-
-              # Copy the changes back to our repository
-              echo "Copying changes back to repository..."
-              cp -r /tmp/merge-work/* ./
-
-              # Add all changes
-              git add .
-
-              # Commit with the upstream commit message
-              git commit -m "$UPSTREAM_COMMIT_MSG" || echo "No changes to commit"
+            # Check if we have upstream commits to sync
+            BEHIND_COUNT=$(git rev-list --count HEAD..upstream/$branch_name)
+            if [ "$BEHIND_COUNT" -eq 0 ]; then
+              echo "Already up to date with upstream/$branch_name (no new commits to sync)"
+              return 0
             fi
 
-            # Push changes to origin
-            git push origin $branch_name
+            echo "Found $BEHIND_COUNT commits to sync from upstream"
+
+            # Get all workflow files currently in our repo
+            WORKFLOW_DIR=".github/workflows"
+            if [ -d "$WORKFLOW_DIR" ]; then
+              echo "Backing up workflow files from $WORKFLOW_DIR"
+              BACKUP_DIR="/tmp/workflow-backup-$(date +%s)"
+              mkdir -p "$BACKUP_DIR"
+              cp -r "$WORKFLOW_DIR" "$BACKUP_DIR/" || echo "Failed to backup workflow files"
+            else
+              echo "No workflow directory found to backup"
+            fi
+
+            # Process each commit from upstream individually
+            COMMITS_TO_PICK=$(git rev-list --reverse HEAD..upstream/$branch_name)
+
+            for COMMIT in $COMMITS_TO_PICK; do
+              echo "Processing commit: $(git log -1 --pretty="%h %s" $COMMIT)"
+
+              # Safer approach: use git diff-tree to analyze commit changes
+              echo "Analyzing changes in commit $COMMIT"
+
+              # Get files modified in the commit, specifically identifying workflow files
+              ALL_CHANGED_FILES=$(git diff-tree --no-commit-id --name-only -r $COMMIT)
+              WORKFLOW_FILES=$(echo "$ALL_CHANGED_FILES" | grep "^.github/workflows/" || echo "")
+              NON_WORKFLOW_FILES=$(echo "$ALL_CHANGED_FILES" | grep -v "^.github/workflows/" || echo "")
+
+              if [ -z "$NON_WORKFLOW_FILES" ]; then
+                echo "Commit only changes workflow files, skipping"
+                continue
+              fi
+
+              echo "This commit changes non-workflow files, applying changes"
+              COMMIT_MSG=$(git log -1 --pretty=format:"%s" $COMMIT)
+
+              # Skip cherry-pick entirely and just apply directly with git apply
+              echo "Extracting non-workflow changes from commit"
+
+              # Create temporary directory for this operation
+              TMP_DIR=$(mktemp -d)
+              cd $TMP_DIR
+
+              # Initialize a git repo to use git apply
+              git init
+
+              # Create a patch file for just the non-workflow files
+              for FILE in $NON_WORKFLOW_FILES; do
+                # Get the diff for this specific file from the commit
+                git -C $GITHUB_WORKSPACE diff-tree -p $COMMIT -- "$FILE" > "${FILE##*/}.patch"
+
+                if [ -s "${FILE##*/}.patch" ]; then
+                  echo "Created patch for $FILE"
+                else
+                  echo "Warning: Empty patch for $FILE"
+                fi
+              done
+
+              # Go back to workspace
+              cd $GITHUB_WORKSPACE
+
+              # Apply each patch individually
+              for PATCH in $TMP_DIR/*.patch; do
+                if [ -f "$PATCH" ] && [ -s "$PATCH" ]; then
+                  echo "Applying patch: $PATCH"
+                  if git apply --reject "$PATCH" 2>/dev/null; then
+                    echo "Successfully applied patch"
+                  else
+                    echo "Failed to apply patch, trying with --ignore-whitespace"
+                    if git apply --reject --ignore-whitespace "$PATCH" 2>/dev/null; then
+                      echo "Successfully applied patch with whitespace ignored"
+                    else
+                      echo "Still failed to apply patch, trying with --3way"
+                      # For binary files, etc., just try to copy directly
+                      FILE_PATH=$(grep "^--- a/" "$PATCH" | head -1 | sed 's|^--- a/||')
+                      if [ -n "$FILE_PATH" ]; then
+                        echo "Trying to directly copy $FILE_PATH from commit"
+                        git show "$COMMIT:$FILE_PATH" > "$FILE_PATH" 2>/dev/null || echo "Failed to extract file"
+                      fi
+                    fi
+                  fi
+                fi
+              done
+
+              # Clean up temp dir
+              rm -rf $TMP_DIR
+
+              # Stage all changes
+              git add -A
+
+              # Commit changes
+              if git diff --staged --quiet; then
+                echo "No changes to commit"
+              else
+                git commit -m "$COMMIT_MSG"
+                echo "Committed changes from $COMMIT"
+              fi
+            done
+
+            # Restore workflow directory
+            if [ -d "$BACKUP_DIR/$WORKFLOW_DIR" ]; then
+              echo "Restoring workflow files from backup"
+              rm -rf "$WORKFLOW_DIR"
+              mkdir -p "$(dirname "$WORKFLOW_DIR")"
+              cp -r "$BACKUP_DIR/$WORKFLOW_DIR" "$(dirname "$WORKFLOW_DIR")/"
+
+              # Commit the workflow restoration
+              git add "$WORKFLOW_DIR"
+              git commit -m "Restore our workflow files" || echo "No workflow changes to commit"
+            fi
+
+            # Push changes to origin if there are any
+            if git rev-parse HEAD >/dev/null 2>&1 && git rev-parse origin/$branch_name >/dev/null 2>&1; then
+              if [ "$(git rev-list --count origin/$branch_name..HEAD)" -gt 0 ]; then
+                echo "Pushing changes to origin"
+                git push origin $branch_name
+              else
+                echo "No changes to push"
+              fi
+            else
+              echo "Unable to determine if changes need to be pushed"
+            fi
+
+            # Clean up
+            rm -rf "$BACKUP_DIR" 2>/dev/null || true
           }
 
           # ----- Sync current branch -----
