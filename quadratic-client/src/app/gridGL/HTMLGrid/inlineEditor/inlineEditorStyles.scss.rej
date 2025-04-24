@@ -1,0 +1,9 @@
+diff a/quadratic-client/src/app/gridGL/HTMLGrid/inlineEditor/inlineEditorStyles.scss b/quadratic-client/src/app/gridGL/HTMLGrid/inlineEditor/inlineEditorStyles.scss	(rejected hunks)
+@@ -1,3 +1,7 @@
++#cell-edit .monaco-editor[data-text-align] .view-line span {
++  display: contents;
++}
++
+ #cell-edit .monaco-editor[data-text-align='left'] .view-line {
+   text-align: left;
+ }
