@@ -110,7 +110,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Cache Pyodide
-        uses: useblacksmith/cache@v5
+        uses: Warpbuilds/cache@v1
         with:
           path: quadratic-client/public/pyodide
           key: pyodide-${{ hashFiles('quadratic-client/download-pyodide.sh') }}
@@ -216,7 +216,7 @@ jobs:
           components: clippy
           override: true
 
-      - uses: useblacksmith/rust-cache@v3
+      - uses: Warpbuilds/rust-cache@v2
 
       - name: Run cargo clippy in quadratic-core
         run: |
