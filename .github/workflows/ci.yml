@@ -54,7 +54,7 @@ jobs:
           components: clippy, llvm-tools-preview
           override: true
 
-      - uses: Warpbuilds/rust-cache@v2
+      - uses: WarpBuilds/rust-cache@sync-upstream
 
       - name: Install grcov
         run: if ! which grcov; then cargo install grcov; fi
@@ -141,7 +141,7 @@ jobs:
           target: wasm32-unknown-unknown
           override: true
 
-      - uses: Warpbuilds/rust-cache@v2
+      - uses: WarpBuilds/rust-cache@sync-upstream
 
       - uses: jetli/wasm-pack-action@v0.4.0
         with:
@@ -216,7 +216,7 @@ jobs:
           components: clippy
           override: true
 
-      - uses: Warpbuilds/rust-cache@v2
+      - uses: WarpBuilds/rust-cache@sync-upstream
 
       - name: Run cargo clippy in quadratic-core
         run: |
@@ -248,7 +248,7 @@ jobs:
           target: wasm32-unknown-unknown
           override: true
 
-      - uses: Warpbuilds/rust-cache@v2
+      - uses: WarpBuilds/rust-cache@sync-upstream
 
       - uses: jetli/wasm-pack-action@v0.4.0
         with:
